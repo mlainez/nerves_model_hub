@@ -5,10 +5,10 @@ defmodule ModelHubTest do
 
   setup do
     File.mkdir_p!(@tmp_root)
-    Application.put_env(:model_hub, :models, [])
+    Application.put_env(:nerves_model_hub, :models, [])
     on_exit(fn ->
       File.rm_rf!(@tmp_root)
-      Application.delete_env(:model_hub, :models)
+      Application.delete_env(:nerves_model_hub, :models)
     end)
 
     :ok
@@ -23,7 +23,7 @@ defmodule ModelHubTest do
       path: path
     ]
 
-    assert {:ok, ^path} = ModelHub.ensure_one(:cached, spec)
+    assert {:ok, ^path} = NervesModelHub.ensure_one(:cached, spec)
   end
 
   test "ensure_one re-downloads if SHA mismatch" do
@@ -38,32 +38,32 @@ defmodule ModelHubTest do
 
     # We expect failure (unreachable URL) but the cached file must
     # be deleted first because the SHA didn't match.
-    assert {:error, _} = ModelHub.ensure_one(:wrong, spec)
+    assert {:error, _} = NervesModelHub.ensure_one(:wrong, spec)
     refute File.exists?(path)
   end
 
   test "path/1 returns :not_configured for unknown ids" do
-    Application.put_env(:model_hub, :models, [])
-    assert {:error, :not_configured} = ModelHub.path(:doesnt_exist)
+    Application.put_env(:nerves_model_hub, :models, [])
+    assert {:error, :not_configured} = NervesModelHub.path(:doesnt_exist)
   end
 
   test "path/1 returns :not_downloaded when configured but missing" do
-    Application.put_env(:model_hub, :models,
+    Application.put_env(:nerves_model_hub, :models,
       ghost: [source: {:url, "http://nope"}, path: Path.join(@tmp_root, "ghost.bin")]
     )
 
-    assert {:error, :not_downloaded} = ModelHub.path(:ghost)
+    assert {:error, :not_downloaded} = NervesModelHub.path(:ghost)
   end
 
   test "path/1 returns ok-tuple once the file is in place" do
     target = Path.join(@tmp_root, "present.bin")
     File.write!(target, "ok")
 
-    Application.put_env(:model_hub, :models,
+    Application.put_env(:nerves_model_hub, :models,
       present: [source: {:url, "http://nope"}, path: target]
     )
 
-    assert {:ok, ^target} = ModelHub.path(:present)
+    assert {:ok, ^target} = NervesModelHub.path(:present)
   end
 
   describe "{:file, _} source" do
@@ -72,7 +72,7 @@ defmodule ModelHubTest do
       dest = Path.join([@tmp_root, "data", "models", "model.gguf"])
       File.write!(src, "model bytes")
 
-      assert {:ok, ^dest} = ModelHub.ensure_one(:baked, source: {:file, src}, path: dest)
+      assert {:ok, ^dest} = NervesModelHub.ensure_one(:baked, source: {:file, src}, path: dest)
       assert File.read!(dest) == "model bytes"
       # Source is left intact — it lives in a read-only rootfs overlay.
       assert File.exists?(src)
@@ -83,7 +83,7 @@ defmodule ModelHubTest do
       dest = Path.join([@tmp_root, "deeply", "nested", "out.bin"])
       File.write!(src, "x")
 
-      assert {:ok, ^dest} = ModelHub.ensure_one(:nested, source: {:file, src}, path: dest)
+      assert {:ok, ^dest} = NervesModelHub.ensure_one(:nested, source: {:file, src}, path: dest)
       refute File.exists?(dest <> ".partial")
     end
 
@@ -92,7 +92,7 @@ defmodule ModelHubTest do
       dest = Path.join(@tmp_root, "never.bin")
 
       assert {:error, {:copy_failed, ^src, :enoent}} =
-               ModelHub.ensure_one(:absent, source: {:file, src}, path: dest)
+               NervesModelHub.ensure_one(:absent, source: {:file, src}, path: dest)
 
       refute File.exists?(dest)
       refute File.exists?(dest <> ".partial")
@@ -106,27 +106,27 @@ defmodule ModelHubTest do
       dest_a = Path.join([@tmp_root, "data", "a.gguf"])
       dest_b = Path.join([@tmp_root, "data", "b.onnx"])
 
-      Application.put_env(:model_hub, :models,
+      Application.put_env(:nerves_model_hub, :models,
         a: [source: {:file, Path.join(@tmp_root, "a.gguf")}, path: dest_a],
         b: [source: {:file, Path.join(@tmp_root, "b.onnx")}, path: dest_b]
       )
 
-      assert {:ok, %{a: ^dest_a, b: ^dest_b}} = ModelHub.ensure_all()
+      assert {:ok, %{a: ^dest_a, b: ^dest_b}} = NervesModelHub.ensure_all()
       assert File.read!(dest_b) == "b.onnx"
 
       # Second boot is a no-op: the files are already staged.
-      assert {:ok, %{a: ^dest_a, b: ^dest_b}} = ModelHub.ensure_all()
+      assert {:ok, %{a: ^dest_a, b: ^dest_b}} = NervesModelHub.ensure_all()
     end
   end
 
   test "ensure_all reports per-model errors" do
-    Application.put_env(:model_hub, :models,
+    Application.put_env(:nerves_model_hub, :models,
       bad: [
         source: {:url, "http://127.0.0.1:1/should-not-listen"},
         path: Path.join(@tmp_root, "bad.bin")
       ]
     )
 
-    assert {:error, [{:bad, _reason}]} = ModelHub.ensure_all()
+    assert {:error, [{:bad, _reason}]} = NervesModelHub.ensure_all()
   end
 end

@@ -1,4 +1,4 @@
-defmodule ModelHub do
+defmodule NervesModelHub do
   @moduledoc """
   First-boot model fetch for Nerves devices.
 
@@ -10,7 +10,7 @@ defmodule ModelHub do
 
   ## Configuration
 
-      config :model_hub,
+      config :nerves_model_hub,
         models: [
           tinyllama: [
             source: {:hf, "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
@@ -24,7 +24,7 @@ defmodule ModelHub do
           ]
         ]
 
-  At app start, call `ModelHub.ensure_all/0` from your own
+  At app start, call `NervesModelHub.ensure_all/0` from your own
   Application supervisor — typically synchronously, before any
   consumer of those model files boots.
 
@@ -55,10 +55,10 @@ defmodule ModelHub do
 
   require Logger
 
-  @app :model_hub
+  @app :nerves_model_hub
 
   @doc """
-  Walk `config :model_hub, :models, [...]` and download any
+  Walk `config :nerves_model_hub, :models, [...]` and download any
   whose `:path` is missing. Returns `{:ok, %{id => path}}` on
   success, `{:error, [{id, reason}, ...]}` on partial failure.
 
@@ -98,12 +98,12 @@ defmodule ModelHub do
 
     cond do
       File.exists?(path) and (sha256 == nil or sha_ok?(path, sha256)) ->
-        Logger.debug("[model_hub] #{id}: cached at #{path}")
+        Logger.debug("[nerves_model_hub] #{id}: cached at #{path}")
         {:ok, path}
 
       File.exists?(path) ->
         Logger.warning(
-          "[model_hub] #{id}: cached file at #{path} failed SHA check, re-downloading"
+          "[nerves_model_hub] #{id}: cached file at #{path} failed SHA check, re-downloading"
         )
         File.rm(path)
         do_fetch(id, source, path, sha256)
@@ -154,7 +154,7 @@ defmodule ModelHub do
           true ->
             File.rename!(partial, path)
             bytes = File.stat!(path).size
-            Logger.info("[model_hub] #{id}: OK (#{div(bytes, 1024 * 1024)} MB)")
+            Logger.info("[nerves_model_hub] #{id}: OK (#{div(bytes, 1024 * 1024)} MB)")
             {:ok, path}
         end
 
@@ -168,7 +168,7 @@ defmodule ModelHub do
   # `partial` so `do_fetch/4` can run the same SHA check + atomic
   # rename regardless of where they came from.
   defp stage(id, {:file, src}, partial) do
-    Logger.info("[model_hub] #{id}: copying #{src} → #{partial}")
+    Logger.info("[nerves_model_hub] #{id}: copying #{src} → #{partial}")
 
     case File.cp(src, partial) do
       :ok -> :ok
@@ -178,7 +178,7 @@ defmodule ModelHub do
 
   defp stage(id, source, partial) do
     url = resolve(source)
-    Logger.info("[model_hub] #{id}: fetching #{url} → #{partial}")
+    Logger.info("[nerves_model_hub] #{id}: fetching #{url} → #{partial}")
     stream_to_file(url, partial)
   end
 
@@ -198,7 +198,7 @@ defmodule ModelHub do
     _ = Application.ensure_all_started(:ssl)
 
     headers = [
-      {~c"user-agent", ~c"model_hub/0.1.0 (Elixir/Nerves)"}
+      {~c"user-agent", ~c"nerves_model_hub/0.1.0 (Elixir/Nerves)"}
     ]
 
     request_opts = [

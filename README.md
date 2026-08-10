@@ -1,4 +1,4 @@
-# model_hub
+# nerves_model_hub
 
 > ### ⚠️ Very early work — built for a workshop, not for production
 >
@@ -32,14 +32,14 @@ way.
 
 ```elixir
 defp deps do
-  [{:model_hub, github: "mlainez/model_hub"}]
+  [{:nerves_model_hub, github: "mlainez/nerves_model_hub"}]
 end
 ```
 
 ## Configure
 
 ```elixir
-config :model_hub,
+config :nerves_model_hub,
   models: [
     tinyllama: [
       source: {:hf, "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
@@ -57,7 +57,7 @@ config :model_hub,
 Then call it once, early, before anything that reads those files:
 
 ```elixir
-{:ok, paths} = ModelHub.ensure_all()
+{:ok, paths} = NervesModelHub.ensure_all()
 ```
 
 ## Sources
@@ -89,9 +89,9 @@ first. `{:file, …}` sources need no network at all.
 ## API
 
 ```elixir
-ModelHub.ensure_all()               # fetch everything missing
-ModelHub.ensure_one(:id, spec)      # one model
-ModelHub.path(:id)                  # {:ok, path} | {:error, :not_downloaded}
+NervesModelHub.ensure_all()               # fetch everything missing
+NervesModelHub.ensure_one(:id, spec)      # one model
+NervesModelHub.path(:id)                  # {:ok, path} | {:error, :not_downloaded}
 ```
 
 Pass `app: :my_app` to read config from a different application
