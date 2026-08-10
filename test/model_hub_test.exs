@@ -66,6 +66,59 @@ defmodule ModelHubTest do
     assert {:ok, ^target} = ModelHub.path(:present)
   end
 
+  describe "{:file, _} source" do
+    test "copies a local file into place" do
+      src = Path.join(@tmp_root, "baked.gguf")
+      dest = Path.join([@tmp_root, "data", "models", "model.gguf"])
+      File.write!(src, "model bytes")
+
+      assert {:ok, ^dest} = ModelHub.ensure_one(:baked, source: {:file, src}, path: dest)
+      assert File.read!(dest) == "model bytes"
+      # Source is left intact — it lives in a read-only rootfs overlay.
+      assert File.exists?(src)
+    end
+
+    test "creates intermediate directories and leaves no .partial behind" do
+      src = Path.join(@tmp_root, "src.bin")
+      dest = Path.join([@tmp_root, "deeply", "nested", "out.bin"])
+      File.write!(src, "x")
+
+      assert {:ok, ^dest} = ModelHub.ensure_one(:nested, source: {:file, src}, path: dest)
+      refute File.exists?(dest <> ".partial")
+    end
+
+    test "errors when the source file is missing, without leaving a partial" do
+      src = Path.join(@tmp_root, "absent.bin")
+      dest = Path.join(@tmp_root, "never.bin")
+
+      assert {:error, {:copy_failed, ^src, :enoent}} =
+               ModelHub.ensure_one(:absent, source: {:file, src}, path: dest)
+
+      refute File.exists?(dest)
+      refute File.exists?(dest <> ".partial")
+    end
+
+    test "ensure_all stages every baked-in model (the firmware boot path)" do
+      for name <- ~w(a.gguf b.onnx) do
+        File.write!(Path.join(@tmp_root, name), name)
+      end
+
+      dest_a = Path.join([@tmp_root, "data", "a.gguf"])
+      dest_b = Path.join([@tmp_root, "data", "b.onnx"])
+
+      Application.put_env(:model_hub, :models,
+        a: [source: {:file, Path.join(@tmp_root, "a.gguf")}, path: dest_a],
+        b: [source: {:file, Path.join(@tmp_root, "b.onnx")}, path: dest_b]
+      )
+
+      assert {:ok, %{a: ^dest_a, b: ^dest_b}} = ModelHub.ensure_all()
+      assert File.read!(dest_b) == "b.onnx"
+
+      # Second boot is a no-op: the files are already staged.
+      assert {:ok, %{a: ^dest_a, b: ^dest_b}} = ModelHub.ensure_all()
+    end
+  end
+
   test "ensure_all reports per-model errors" do
     Application.put_env(:model_hub, :models,
       bad: [

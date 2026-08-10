@@ -35,6 +35,10 @@ defmodule ModelHub do
       Pass `{:hf, "owner/repo", "filename", revision: "rev"}` for
       a specific branch or commit.
     * `{:url, "https://..."}` — any HTTPS URL.
+    * `{:file, "/srv/models/foo.gguf"}` — a local path, copied
+      rather than downloaded. This is how firmware bakes models
+      into a read-only rootfs overlay at build time and moves them
+      onto writable storage on first boot, with no network at all.
 
   ## Atomicity
 
@@ -135,14 +139,12 @@ defmodule ModelHub do
   # ----------------------------------------------------------------
 
   defp do_fetch(id, source, path, sha256) do
-    url = resolve(source)
-    Logger.info("[model_hub] #{id}: fetching #{url} → #{path}")
     File.mkdir_p!(Path.dirname(path))
 
     partial = path <> ".partial"
     File.rm(partial)
 
-    case stream_to_file(url, partial) do
+    case stage(id, source, partial) do
       :ok ->
         cond do
           sha256 != nil and not sha_ok?(partial, sha256) ->
@@ -160,6 +162,24 @@ defmodule ModelHub do
         File.rm(partial)
         {:error, reason}
     end
+  end
+
+  # Stage the source into `partial`. Both branches leave the bytes at
+  # `partial` so `do_fetch/4` can run the same SHA check + atomic
+  # rename regardless of where they came from.
+  defp stage(id, {:file, src}, partial) do
+    Logger.info("[model_hub] #{id}: copying #{src} → #{partial}")
+
+    case File.cp(src, partial) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:copy_failed, src, reason}}
+    end
+  end
+
+  defp stage(id, source, partial) do
+    url = resolve(source)
+    Logger.info("[model_hub] #{id}: fetching #{url} → #{partial}")
+    stream_to_file(url, partial)
   end
 
   defp resolve({:url, url}), do: url
