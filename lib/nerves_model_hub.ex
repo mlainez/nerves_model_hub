@@ -42,15 +42,18 @@ defmodule NervesModelHub do
 
   ## Atomicity
 
-  Downloads write to `<path>.partial` and rename on success. A
-  crash mid-download leaves the partial file; the next run retries
-  from scratch (no resume yet).
+  Downloads write to `<path>.partial`, are fsynced, and are renamed
+  into place on success. A crash mid-download leaves the partial
+  file; the next run retries from scratch (no resume). Empty files
+  are never treated as cached.
 
   ## Network
 
-  Uses Erlang `:httpc` — no new Rust network deps. Bring up
-  connectivity (`vintage_net` etc.) before this runs; the boot
-  hook only attempts a fetch when the target file is missing.
+  Uses Erlang `:httpc`. TLS peers are verified against the OS trust
+  store, or CAStore's bundled roots when the OS has none. Bring up
+  connectivity (`vintage_net` etc.) before this runs; a fetch is only
+  attempted when the target file is missing. Gated Hugging Face repos
+  (which need a token) are not supported.
   """
 
   require Logger
@@ -62,14 +65,16 @@ defmodule NervesModelHub do
   whose `:path` is missing. Returns `{:ok, %{id => path}}` on
   success, `{:error, [{id, reason}, ...]}` on partial failure.
 
-  Optionally pass `app: :my_app` to read config from a different
-  application namespace (handy when migrating from a previous
-  hub library — pass `app: :nx_arm` to read `:nx_arm, :models`).
+  Options:
+
+    * `:models` — the model list to use instead of reading app config.
+    * `:app` — read `config :<app>, :models` instead of
+      `config :nerves_model_hub, :models` (`nerves_ai` uses `:nerves_ai`).
   """
   @spec ensure_all(keyword()) :: {:ok, %{atom() => Path.t()}} | {:error, [{atom(), term()}]}
   def ensure_all(opts \\ []) do
     app = Keyword.get(opts, :app, @app)
-    models = Application.get_env(app, :models, [])
+    models = Keyword.get_lazy(opts, :models, fn -> Application.get_env(app, :models, []) end)
 
     {ok, errors} =
       models
@@ -97,11 +102,11 @@ defmodule NervesModelHub do
     sha256 = Keyword.get(spec, :sha256)
 
     cond do
-      File.exists?(path) and (sha256 == nil or sha_ok?(path, sha256)) ->
+      cached?(path) and (sha256 == nil or sha_ok?(path, sha256)) ->
         Logger.debug("[nerves_model_hub] #{id}: cached at #{path}")
         {:ok, path}
 
-      File.exists?(path) ->
+      cached?(path) ->
         Logger.warning(
           "[nerves_model_hub] #{id}: cached file at #{path} failed SHA check, re-downloading"
         )
@@ -126,7 +131,7 @@ defmodule NervesModelHub do
       spec ->
         target = Keyword.fetch!(spec, :path)
 
-        if File.exists?(target) do
+        if cached?(target) do
           {:ok, target}
         else
           {:error, :not_downloaded}
@@ -138,29 +143,62 @@ defmodule NervesModelHub do
   # Internal: download mechanics.
   # ----------------------------------------------------------------
 
+  # A zero-byte file is what an interrupted write can leave behind.
+  defp cached?(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size > 0 -> true
+      _ -> false
+    end
+  end
+
   defp do_fetch(id, source, path, sha256) do
-    File.mkdir_p!(Path.dirname(path))
-
     partial = path <> ".partial"
-    File.rm(partial)
 
-    case stage(id, source, partial) do
-      :ok ->
-        cond do
-          sha256 != nil and not sha_ok?(partial, sha256) ->
-            File.rm(partial)
-            {:error, {:sha_mismatch, id}}
-
-          true ->
-            File.rename!(partial, path)
-            bytes = File.stat!(path).size
-            Logger.info("[nerves_model_hub] #{id}: OK (#{div(bytes, 1024 * 1024)} MB)")
-            {:ok, path}
-        end
-
-      {:error, reason} ->
+    with :ok <- mkdir(Path.dirname(path)),
+         _ = File.rm(partial),
+         :ok <- stage(id, source, partial),
+         :ok <- check_staged(id, partial, sha256),
+         :ok <- fsync(partial),
+         :ok <- rename(partial, path) do
+      bytes = File.stat!(path).size
+      Logger.info("[nerves_model_hub] #{id}: OK (#{div(bytes, 1024 * 1024)} MB)")
+      {:ok, path}
+    else
+      {:error, _} = err ->
         File.rm(partial)
-        {:error, reason}
+        err
+    end
+  end
+
+  defp mkdir(dir) do
+    case File.mkdir_p(dir) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:mkdir_failed, dir, reason}}
+    end
+  end
+
+  defp check_staged(id, partial, sha256) do
+    cond do
+      not cached?(partial) -> {:error, {:empty_download, id}}
+      sha256 != nil and not sha_ok?(partial, sha256) -> {:error, {:sha_mismatch, id}}
+      true -> :ok
+    end
+  end
+
+  # Flush file data to storage before the rename makes it visible, so
+  # a power cut can't leave a truncated file under the final name.
+  defp fsync(path) do
+    with {:ok, fd} <- :file.open(String.to_charlist(path), [:read, :write, :binary, :raw]) do
+      result = :file.sync(fd)
+      :ok = :file.close(fd)
+      result
+    end
+  end
+
+  defp rename(from, to) do
+    case File.rename(from, to) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:rename_failed, to, reason}}
     end
   end
 
@@ -197,50 +235,40 @@ defmodule NervesModelHub do
     _ = Application.ensure_all_started(:inets)
     _ = Application.ensure_all_started(:ssl)
 
-    headers = [
-      {~c"user-agent", ~c"nerves_model_hub/0.1.0 (Elixir/Nerves)"}
-    ]
+    headers = [{~c"user-agent", ~c"nerves_model_hub/0.1.0 (Elixir/Nerves)"}]
 
-    request_opts = [
+    # SNI comes from each request's host, so redirects to another host
+    # (Hugging Face LFS files redirect to a CDN) verify correctly.
+    http_opts = [
       ssl: [
         verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        server_name_indication: String.to_charlist(host_of(url))
+        cacerts: cacerts(),
+        depth: 4,
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ]
       ],
+      connect_timeout: 30_000,
       timeout: :infinity,
       autoredirect: true
     ]
 
-    case File.open(dest, [:write, :binary]) do
-      {:ok, fd} ->
-        case :httpc.request(
-               :get,
-               {String.to_charlist(url), headers},
-               request_opts,
-               stream: String.to_charlist(dest),
-               body_format: :binary
-             ) do
-          {:ok, :saved_to_file} ->
-            File.close(fd)
-            :ok
-
-          {:ok, {{_v, code, _r}, _h, _body}} ->
-            File.close(fd)
-            {:error, {:http_status, code}}
-
-          {:error, reason} ->
-            File.close(fd)
-            {:error, {:http_error, reason}}
-        end
-
-      {:error, reason} ->
-        {:error, {:file_open, reason}}
+    case :httpc.request(:get, {String.to_charlist(url), headers}, http_opts,
+           stream: String.to_charlist(dest),
+           body_format: :binary
+         ) do
+      {:ok, :saved_to_file} -> :ok
+      {:ok, {{_v, code, _r}, _h, _body}} -> {:error, {:http_status, code}}
+      {:error, reason} -> {:error, {:http_error, reason}}
     end
   end
 
-  defp host_of(url) do
-    %URI{host: host} = URI.parse(url)
-    host || ""
+  # Prefer the OS trust store; fall back to CAStore's bundled Mozilla
+  # roots when the system image ships none.
+  defp cacerts do
+    :public_key.cacerts_get()
+  rescue
+    _ -> CAStore.file_path() |> File.read!() |> :public_key.pem_decode() |> Enum.map(&elem(&1, 1))
   end
 
   defp sha_ok?(path, expected) do

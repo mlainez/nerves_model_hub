@@ -1,7 +1,7 @@
 defmodule ModelHubTest do
   use ExUnit.Case, async: false
 
-  @tmp_root System.tmp_dir!() |> Path.join("nx_arm_hub_test_#{System.unique_integer([:positive])}")
+  @tmp_root System.tmp_dir!() |> Path.join("nerves_model_hub_test_#{System.unique_integer([:positive])}")
 
   setup do
     File.mkdir_p!(@tmp_root)
@@ -128,5 +128,46 @@ defmodule ModelHubTest do
     )
 
     assert {:error, [{:bad, _reason}]} = NervesModelHub.ensure_all()
+  end
+
+  test "an empty cached file is not trusted" do
+    path = Path.join(@tmp_root, "empty.bin")
+    File.write!(path, "")
+    src = Path.join(@tmp_root, "real.bin")
+    File.write!(src, "real bytes")
+
+    assert {:ok, ^path} = NervesModelHub.ensure_one(:empty, source: {:file, src}, path: path)
+    assert File.read!(path) == "real bytes"
+  end
+
+  test "an empty download is an error, not a cached model" do
+    src = Path.join(@tmp_root, "zero.bin")
+    File.write!(src, "")
+    dest = Path.join(@tmp_root, "out/zero.bin")
+
+    assert {:error, {:empty_download, :zero}} =
+             NervesModelHub.ensure_one(:zero, source: {:file, src}, path: dest)
+
+    refute File.exists?(dest)
+    refute File.exists?(dest <> ".partial")
+  end
+
+  test "ensure_all honours an explicit :models option" do
+    src = Path.join(@tmp_root, "m.bin")
+    File.write!(src, "m")
+    dest = Path.join(@tmp_root, "m_out.bin")
+
+    assert {:ok, %{m: ^dest}} =
+             NervesModelHub.ensure_all(models: [m: [source: {:file, src}, path: dest]])
+  end
+
+  test "an unwritable target directory returns an error instead of raising" do
+    src = Path.join(@tmp_root, "x.bin")
+    File.write!(src, "x")
+    blocker = Path.join(@tmp_root, "blocker")
+    File.write!(blocker, "a file, not a directory")
+
+    assert {:error, {:mkdir_failed, _, _}} =
+             NervesModelHub.ensure_one(:x, source: {:file, src}, path: Path.join(blocker, "x.bin"))
   end
 end

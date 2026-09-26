@@ -7,9 +7,9 @@ defmodule NervesModelHub.MixProject do
     [
       app: :nerves_model_hub,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
-      deps: [],
+      deps: [{:castore, "~> 1.0"}],
       name: "NervesModelHub",
       description:
         "First-boot model downloader from HuggingFace / URLs with SHA verification, for Nerves",
