@@ -5,10 +5,7 @@
 > This package was written for the **Goatmire Elixir workshop** on running
 > Nerves on Fairphone 3 hardware. It exists for tinkering and teaching.
 >
-> It is **not an actively maintained project** (yet). There are no
-> stability guarantees, APIs will change without notice, and parts of it
-> are wired-but-unproven. Treat it as a starting point to hack on, not as
-> a dependency to build a product on.
+> There are no stability guarantees and APIs will change without notice.
 >
 > See [`nerves_ai`](https://github.com/mlainez/nerves_ai) for the full
 > stack and the workshop context.
@@ -70,13 +67,20 @@ Then call it once, early, before anything that reads those files:
 
 ## Behaviour worth knowing
 
-**Idempotent.** A model whose `:path` already exists is skipped. If you
-gave a `:sha256` and the cached file fails the check, it's deleted and
-re-fetched.
+**Idempotent.** A model whose `:path` already exists and is non-empty is
+skipped. If you gave a `:sha256` and the cached file fails the check, it's
+deleted and re-fetched. The SHA check re-reads the whole file on every
+boot, which takes a few seconds for large models on slow storage.
 
-**Atomic.** Everything stages to `<path>.partial` and renames on success,
-so a crash or power cut mid-fetch never leaves a truncated file that
-looks valid. There's no resume — an interrupted fetch restarts.
+**Atomic.** Everything stages to `<path>.partial`, is fsynced, and is
+renamed on success, so a crash or power cut mid-fetch never leaves a
+truncated file that looks valid. There's no resume — an interrupted
+fetch restarts.
+
+**TLS.** Peers are verified against the OS trust store, or CAStore's
+bundled Mozilla roots when the system image ships none. Redirects to
+other hosts, such as Hugging Face's LFS CDN, are followed and verified.
+Gated Hugging Face repos, which need an access token, are not supported.
 
 **Non-fatal.** `ensure_all/0` returns `{:error, [{id, reason}, …]}` for
 partial failures rather than raising, so one missing model doesn't stop
@@ -94,8 +98,19 @@ NervesModelHub.ensure_one(:id, spec)      # one model
 NervesModelHub.path(:id)                  # {:ok, path} | {:error, :not_downloaded}
 ```
 
-Pass `app: :my_app` to read config from a different application
-namespace.
+`ensure_all/1` options:
+
+* `models:` — use this model list instead of reading app config.
+* `app:` — read `config :<app>, :models` instead of
+  `config :nerves_model_hub, :models`.
+
+`nerves_ai` reads `config :nerves_ai, :models` and calls `ensure_all/1`
+from a background task that retries failed downloads with backoff.
+
+## Toolchain
+
+Built and tested with Erlang/OTP 29.1.1 and Elixir 1.20.4, matching the
+official Nerves systems (see `.tool-versions`).
 
 ## License
 
